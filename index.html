@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zubi Maths Darts Quiz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            background: linear-gradient(to bottom right, #1a202c, #2d3748);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 9999px; /* rounded-full */
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25); /* shadow-2xl */
+            border: 4px solid #1a202c;
+        }
+        button:hover {
+            transform: scale(1.05);
+            transition: all 0.2s ease-in-out;
+        }
+        button:active {
+            transform: scale(0.95);
+            transition: all 0.1s ease-in-out;
+        }
+    </style>
+</head>
+<body>
+
+<div id="app" class="w-full flex flex-col items-center justify-center p-4"></div>
+
+<script>
+    const DARTBOARD_VALUES = [
+      ...Array.from({ length: 20 }, (_, i) => i + 1),
+      25,
+      50,
+    ];
+
+    const MULTIPLIERS = {
+      single: 1,
+      double: 2,
+      triple: 3,
+    };
+
+    // Pre-compute all possible dart sums to ensure questions are always solvable.
+    const precomputePossibleSums = (doubleOut = false) => {
+        const sums = new Set();
+        const singles = DARTBOARD_VALUES;
+        const doubles = DARTBOARD_VALUES.slice(0, 20).map(val => val * 2);
+        const triples = DARTBOARD_VALUES.slice(0, 20).map(val => val * 3);
+        const allHits = [...singles, ...doubles, ...triples, 0];
+
+        if (doubleOut) {
+            const doublesAndBull = [...doubles, 50];
+            for (const i of allHits) {
+                for (const j of allHits) {
+                    for (const k of doublesAndBull) {
+                        sums.add(i + j + k);
+                    }
+                }
+            }
+        } else {
+            for (const i of allHits) {
+                for (const j of allHits) {
+                    for (const k of allHits) {
+                        sums.add(i + j + k);
+                    }
+                }
+            }
+        }
+        return sums;
+    };
+
+    const possibleSums = precomputePossibleSums();
+    const doubleOutSums = precomputePossibleSums(true);
+
+    const sfxCorrect = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
+    const sfxIncorrect = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3');
+    const sfxDartThrow = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3');
+    sfxCorrect.loop = false;
+    sfxIncorrect.loop = false;
+    sfxDartThrow.loop = false;
+
+    let gameState = 'menu';
+    let score = 0;
+    let highScore = 0;
+    let lives = 3;
+    let consecutiveCorrect = 0;
+    let timer = 30;
+    let question = '';
+    let targetSum = 0;
+    let dartsThrown = [];
+    let doubleOutMode = false;
+    let isMuted = false;
+    let timerInterval = null;
+    let canvas = null;
+    let animatedDarts = [];
+    let animationFrameId = null;
+
+    const appContainer = document.getElementById('app');
+
+    const saveHighScore = () => {
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('zubi-maths-darts-quiz-high-score', highScore.toString());
+        }
+    };
+
+    const loadHighScore = () => {
+        const storedHighScore = localStorage.getItem('zubi-maths-darts-quiz-high-score');
+        if (storedHighScore) {
+            highScore = parseInt(storedHighScore, 10);
+        }
+    };
+    
+    const toggleMute = () => {
+        isMuted = !isMuted;
+        render();
+    };
+    
+    const playSound = (audio) => {
+        if (!isMuted) {
+            audio.play().catch(e => console.log('SFX play failed:', e));
+        }
+    };
+    
+    const resetGame = () => {
+      score = 0;
+      lives = 3;
+      consecutiveCorrect = 0;
+      dartsThrown = [];
+      animatedDarts = [];
+      gameState = 'playing';
+      generateQuestion();
+    };
+
+    const handleCorrectAnswer = () => {
+        playSound(sfxCorrect);
+        score += 10;
+        consecutiveCorrect++;
+        if (consecutiveCorrect >= 5) {
+            lives++;
+            consecutiveCorrect = 0;
+        }
+        generateQuestion();
+    };
+
+    const handleWrongAnswer = () => {
+        playSound(sfxIncorrect);
+        lives--;
+        if (lives <= 0) {
+            saveHighScore();
+            gameState = 'gameOver';
+            clearInterval(timerInterval);
+        }
+        consecutiveCorrect = 0;
+        generateQuestion();
+    };
+
+    const generateQuestion = () => {
+        clearInterval(timerInterval);
+        const sumsToCheck = doubleOutMode ? doubleOutSums : possibleSums;
+        if (sumsToCheck.size === 0) {
+            console.error("No possible sums available.");
+            return;
+        }
+
+        let a, b, op, result;
+        let found = false;
+
+        while (!found) {
+            const ops = ['+', '-', '*', '/'];
+            op = ops[Math.floor(Math.random() * ops.length)];
+            a = Math.floor(Math.random() * 50) + 1;
+            b = Math.floor(Math.random() * 50) + 1;
+
+            switch (op) {
+                case '+':
+                    result = a + b;
+                    break;
+                case '-':
+                    result = a - b;
+                    break;
+                case '*':
+                    a = Math.floor(Math.random() * 20) + 1;
+                    b = Math.floor(Math.random() * 20) + 1;
+                    result = a * b;
+                    break;
+                case '/':
+                    a = (Math.floor(Math.random() * 10) + 1) * (Math.floor(Math.random() * 10) + 1);
+                    b = Math.floor(Math.random() * 10) + 1;
+                    while (a % b !== 0 || a === 0) {
+                        a = (Math.floor(Math.random() * 10) + 1) * (Math.floor(Math.random() * 10) + 1);
+                        b = Math.floor(Math.random() * 10) + 1;
+                    }
+                    result = a / b;
+                    break;
+                default:
+                    break;
+            }
+
+            if (sumsToCheck.has(result)) {
+                found = true;
+            }
+        }
+
+        question = `${a} ${op} ${b}`;
+        targetSum = result;
+        timer = 30;
+        dartsThrown = [];
+        animatedDarts = [];
+        startTimer();
+        render();
+    };
+    
+    const startTimer = () => {
+        timerInterval = setInterval(() => {
+            timer--;
+            if (timer <= 0) {
+                clearInterval(timerInterval);
+                handleWrongAnswer();
+            }
+            render();
+        }, 1000);
+    };
+
+    const checkAnswer = () => {
+        if (dartsThrown.length < 3) return;
+        const sum = dartsThrown.reduce((acc, val) => acc + val, 0);
+        const lastDartValue = dartsThrown[2];
+        const isLastDouble = DARTBOARD_VALUES.slice(0, 20).some(val => val * 2 === lastDartValue) || lastDartValue === 50;
+        
+        if (sum === targetSum) {
+            if (doubleOutMode && isLastDouble) {
+                handleCorrectAnswer();
+            } else if (!doubleOutMode) {
+                handleCorrectAnswer();
+            } else {
+                handleWrongAnswer();
+            }
+        } else {
+            handleWrongAnswer();
+        }
+    };
+    
+    const handleUndo = () => {
+        if (dartsThrown.length > 0) {
+            dartsThrown.pop();
+            animatedDarts.pop();
+            render();
+        }
+    };
+
+    const handleMiss = () => {
+        if (dartsThrown.length < 3) {
+            playSound(sfxDartThrow);
+            dartsThrown.push(0);
+            animatedDarts.push({ x: -100, y: -100, value: 0 });
+            render();
+        }
+    };
+
+    const handleDartThrow = (value, x, y) => {
+        if (dartsThrown.length < 3) {
+            playSound(sfxDartThrow);
+            dartsThrown.push(value);
+            animatedDarts.push({ x, y, value });
+            render();
+        }
+    };
+    
+    const drawDartboard = () => {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const size = Math.min(window.innerWidth, window.innerHeight) * 0.8;
+        canvas.width = size;
+        canvas.height = size;
+        const centerX = size / 2;
+        const centerY = size / 2;
+        const radius = size / 2;
+
+        const doubleTripleRings = [
+            { rInner: radius * 0.92, rOuter: radius, color: '#15803d', altColor: '#b91c1c', value: 'double' },
+            { rInner: radius * 0.5, rOuter: radius * 0.6, color: '#b91c1c', altColor: '#15803d', value: 'triple' }
+        ];
+
+        const segments = [
+            20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+        ];
+
+        let angle = -Math.PI / 20 - Math.PI / 2;
+
+        ctx.clearRect(0, 0, size, size);
+
+        for (let i = 0; i < 20; i++) {
+            const startAngle = angle;
+            const endAngle = startAngle + Math.PI / 10;
+            const number = segments[i];
+
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 0.92, startAngle, endAngle);
+            ctx.arc(centerX, centerY, radius * 0.15, endAngle, startAngle, true);
+            ctx.fillStyle = i % 2 === 0 ? '#013e28' : '#e5e7eb';
+            ctx.fill();
+            ctx.closePath();
+
+            doubleTripleRings.forEach(ring => {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, ring.rOuter, startAngle, endAngle);
+                ctx.arc(centerX, centerY, ring.rInner, endAngle, startAngle, true);
+                ctx.fillStyle = i % 2 === 0 ? ring.color : ring.altColor;
+                ctx.fill();
+                ctx.closePath();
+            });
+
+            const numberTextRadius = radius * 0.75;
+            const numberTextX = centerX + numberTextRadius * Math.cos(startAngle + Math.PI / 20);
+            const numberTextY = centerY + numberTextRadius * Math.sin(startAngle + Math.PI / 20);
+            ctx.fillStyle = i % 2 === 0 ? '#e5e7eb' : '#013e28';
+            ctx.font = 'bold 20px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(number.toString(), numberTextX, numberTextY);
+
+            const perimeterTextRadius = radius * 1.05;
+            const perimeterTextX = centerX + perimeterTextRadius * Math.cos(startAngle + Math.PI / 20);
+            const perimeterTextY = centerY + perimeterTextRadius * Math.sin(startAngle + Math.PI / 20);
+            ctx.fillStyle = '#fff';
+            ctx.font = '24px Inter, sans-serif';
+            ctx.fillText(number.toString(), perimeterTextX, perimeterTextY);
+
+            angle += Math.PI / 10;
+        }
+
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.15, 0, 2 * Math.PI);
+        ctx.fillStyle = '#15803d';
+        ctx.fill();
+        ctx.closePath();
+
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.05, 0, 2 * Math.PI);
+        ctx.fillStyle = '#b91c1c';
+        ctx.fill();
+        ctx.closePath();
+
+        animatedDarts.forEach(dart => {
+            ctx.beginPath();
+            ctx.arc(dart.x, dart.y, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = '#3b82f6';
+            ctx.fill();
+            ctx.closePath();
+        });
+    };
+
+    const getDartValue = (x, y) => {
+        if (!canvas) return 0;
+        const size = canvas.width;
+        const centerX = size / 2;
+        const centerY = size / 2;
+        const radius = size / 2;
+        const dx = x - centerX;
+        const dy = y - centerY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist > radius) return 0;
+
+        if (dist < radius * 0.05) return 50;
+        if (dist < radius * 0.15) return 25;
+
+        let angle = Math.atan2(dy, dx);
+        if (angle < 0) angle += 2 * Math.PI;
+
+        const startAngle = -Math.PI / 20 - Math.PI / 2;
+        const angleAdjusted = (angle - startAngle + 2 * Math.PI) % (2 * Math.PI);
+        const segmentIndex = Math.floor(angleAdjusted / (Math.PI / 10));
+        
+        const segmentNumbers = [
+            20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+        ];
+        const value = segmentNumbers[segmentIndex];
+
+        if (dist > radius * 0.92) {
+            return value * MULTIPLIERS.double;
+        } else if (dist > radius * 0.5 && dist < radius * 0.6) {
+            return value * MULTIPLIERS.triple;
+        } else {
+            return value * MULTIPLIERS.single;
+        }
+    };
+    
+    const handleCanvasClick = (e) => {
+        if (gameState !== 'playing' || dartsThrown.length >= 3) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const value = getDartValue(x, y);
+        handleDartThrow(value, x, y);
+    };
+
+    const render = () => {
+        appContainer.innerHTML = '';
+        let content;
+
+        const commonClasses = "flex flex-col items-center justify-center p-4 min-h-screen bg-gradient-to-br from-gray-900 to-gray-700 font-inter text-white space-y-8";
+        const buttonClasses = "bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-all transform hover:scale-105 active:scale-95 text-lg sm:text-xl";
+        
+        switch (gameState) {
+            case 'menu':
+                content = `
+                    <div class="${commonClasses}">
+                        <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white text-center drop-shadow-lg">
+                            Zubi Maths Darts Quiz
+                        </h1>
+                        <p class="text-xl sm:text-2xl text-gray-200 text-center max-w-xl">
+                            Hit the right zones with 3 darts to get the answer!
+                        </p>
+                        <div class="flex flex-col items-center space-y-4">
+                            <button id="startButton" class="${buttonClasses}">
+                                Start Game
+                            </button>
+                            <div class="flex items-center space-x-2">
+                                <input type="checkbox" id="doubleOut" ${doubleOutMode ? 'checked' : ''} class="h-5 w-5 text-purple-600 rounded">
+                                <label for="doubleOut" class="text-white text-lg">
+                                    Double Out Mode
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                appContainer.innerHTML = content;
+                document.getElementById('startButton').addEventListener('click', () => {
+                    doubleOutMode = document.getElementById('doubleOut').checked;
+                    resetGame();
+                });
+                break;
+            case 'playing':
+                content = `
+                    <div class="${commonClasses} w-full">
+                        <div class="flex justify-between items-center w-full px-4 sm:px-8">
+                            <div class="flex items-center space-x-2 text-white text-xl">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-target">
+                                  <circle cx="12" cy="12" r="10"/>
+                                  <circle cx="12" cy="12" r="6"/>
+                                  <circle cx="12" cy="12" r="2"/>
+                                </svg>
+                                <span class="font-bold">Score: ${score}</span>
+                            </div>
+                            <div class="flex items-center space-x-2 text-red-400 text-xl">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="currentColor" stroke="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-heart">
+                                  <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                                </svg>
+                                <span class="font-bold">Lives: ${lives}</span>
+                            </div>
+                            <div class="flex items-center space-x-2 text-yellow-300 text-xl">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-timer">
+                                  <path d="M10 2h4"/>
+                                  <path d="M12 14v-4"/>
+                                  <path d="M4 13a8 8 0 0 1 8-7 8 8 0 1 1-5.3 14L4 17.6"/>
+                                </svg>
+                                <span class="font-bold">Time: ${timer}s</span>
+                            </div>
+                            <button id="muteButton" class="text-white">
+                                ${isMuted ? '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-volume-x"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M22 9l-6 6"/><path d="M16 9l6 6"/></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-volume-2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>'}
+                            </button>
+                        </div>
+                        <h2 class="text-3xl sm:text-4xl font-extrabold text-white text-center drop-shadow-md">
+                            ${question} = ?
+                        </h2>
+                        <div class="text-xl text-white font-semibold">
+                            Darts Thrown: ${dartsThrown.join(' + ')}
+                        </div>
+                        <div class="w-full flex justify-center p-4">
+                            <canvas id="dartboard-canvas"></canvas>
+                        </div>
+                        <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                            ${dartsThrown.length > 0 ? `<button id="undoButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all transform hover:scale-105 active:scale-95 text-lg">Undo</button>` : ''}
+                            ${dartsThrown.length < 3 ? `<button id="missButton" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all transform hover:scale-105 active:scale-95 text-lg">Miss (0)</button>` : ''}
+                            ${dartsThrown.length === 3 ? `<button id="submitButton" class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transition-all transform hover:scale-105 active:scale-95 text-lg">Submit Answer</button>` : ''}
+                        </div>
+                        ${doubleOutMode ? '<p class="text-red-400 font-bold text-lg mt-4">Double Out Mode: Last dart must be a double!</p>' : ''}
+                    </div>
+                `;
+                appContainer.innerHTML = content;
+                canvas = document.getElementById('dartboard-canvas');
+                canvas.addEventListener('click', handleCanvasClick);
+                if (document.getElementById('undoButton')) {
+                    document.getElementById('undoButton').addEventListener('click', handleUndo);
+                }
+                if (document.getElementById('missButton')) {
+                    document.getElementById('missButton').addEventListener('click', handleMiss);
+                }
+                if (document.getElementById('submitButton')) {
+                    document.getElementById('submitButton').addEventListener('click', checkAnswer);
+                }
+                document.getElementById('muteButton').addEventListener('click', toggleMute);
+                
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                }
+                const animationLoop = () => {
+                    drawDartboard();
+                    animationFrameId = requestAnimationFrame(animationLoop);
+                };
+                animationFrameId = requestAnimationFrame(animationLoop);
+
+                break;
+            case 'gameOver':
+                content = `
+                    <div class="${commonClasses}">
+                        <h1 class="text-5xl sm:text-6xl font-extrabold text-red-500 text-center drop-shadow-lg">
+                            Game Over!
+                        </h1>
+                        <p class="text-3xl sm:text-4xl text-white font-bold">
+                            Your Score: ${score}
+                        </p>
+                        <p class="text-2xl sm:text-3xl text-yellow-300 flex items-center space-x-2 font-bold">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trophy">
+                              <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47 1-1 1H7a1 1 0 0 1-1-1v-2.34l-.48-.96A2 2 0 0 1 4 11.24V11a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v.24c0 .4-.18.77-.48.96z"/><path d="M14 14.66V17c0 .55.47 1 1 1h2a1 1 0 0 0 1-1v-2.34l.48-.96A2 2 0 0 0 20 11.24V11a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v.24c0 .4.18.77.48.96z"/>
+                            </svg>
+                            <span>High Score: ${highScore}</span>
+                        </p>
+                        <button id="playAgainButton" class="${buttonClasses}">
+                            Play Again
+                        </button>
+                    </div>
+                `;
+                appContainer.innerHTML = content;
+                document.getElementById('playAgainButton').addEventListener('click', resetGame);
+                break;
+            default:
+                break;
+        }
+    };
+    
+    window.onload = function() {
+      loadHighScore();
+      render();
+    };
+</script>
+
+</body>
+</html>
+

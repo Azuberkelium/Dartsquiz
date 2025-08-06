@@ -1,4 +1,4 @@
-mport React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Heart, Target, Trophy, Timer, Volume2, VolumeX } from 'lucide-react';
 
 const DARTBOARD_VALUES = [
@@ -545,3 +545,4 @@ const App = () => {
 };
 
 export default App;
+
